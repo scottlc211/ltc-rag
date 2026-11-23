@@ -1,0 +1,31 @@
+# ---- 轻量 OCR 服务（RapidOCR + ONNXRuntime，纯 CPU，懒加载） ----
+FROM python:3.11-slim
+
+WORKDIR /ocr
+
+# RapidOCR (opencv) 在 slim 镜像里需要的基础动态库
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+        fastembed \
+        onnxruntime \
+        rapidocr \
+        fastapi \
+        uvicorn \
+        pillow
+
+COPY scripts/ltc_ocr.py scripts/embed_server.py /ocr/
+
+# 预下载 95MB 的 bge-small-zh-v1.5 进镜像缓存，启动秒开且永不报 402 欠费
+ENV EMBED_MODEL=BAAI/bge-small-zh-v1.5 \
+    OCR_ONLY=false \
+    PYTHONUNBUFFERED=1
+
+RUN python -c "from fastembed import TextEmbedding; list(TextEmbedding(model_name='BAAI/bge-small-zh-v1.5').embed(['预热']))"
+
+EXPOSE 8091
+CMD ["python", "-m", "uvicorn", "embed_server:app", "--host", "0.0.0.0", "--port", "8091"]

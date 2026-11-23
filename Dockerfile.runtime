@@ -1,0 +1,17 @@
+# ---- 运行阶段（只拷预构建 jar）----
+#
+# 用途：小内存 VPS（1~2G）上用这个替代 Dockerfile。
+# 差别只在"不在服务器上跑 Maven"：jar 在本机 target\ltc-rag.jar 打好再上传，
+# 服务器只需要拉 eclipse-temurin:17-jre 一个镜像，构建 10 秒内完成、不吃内存。
+#
+# 用法（docker-compose.yml 的 build.dockerfile 由 APP_DOCKERFILE 控制）：
+#   APP_DOCKERFILE=Dockerfile.runtime docker compose up -d --build
+#
+# 前提：上传前先在本机执行 scripts\local-build.ps1 生成 target\ltc-rag.jar。
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+ENV TZ=Asia/Shanghai \
+    JAVA_OPTS="-XX:MaxRAMPercentage=65 -XX:+UseG1GC -Dfile.encoding=UTF-8"
+COPY target/ltc-rag-deploy.jar /app/app.jar
+EXPOSE 8080
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]

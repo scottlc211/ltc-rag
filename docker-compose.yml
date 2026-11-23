@@ -1,0 +1,92 @@
+# 3C4G 部署（复用宿主机 MySQL 8.0 + Qdrant + App + Magpie 大模型网关）：
+# 内存预算 ≈ 宿主机 MySQL（已有） + Qdrant 300M + App 800M + Magpie 60M
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    restart: unless-stopped
+    mem_limit: ${QDRANT_MEM_LIMIT:-400m}
+    volumes:
+      - qdrant-data:/qdrant/storage
+    ports:
+      # Qdrant 无鉴权，只绑宿主机 127.0.0.1 给本机应用访问
+      - "127.0.0.1:6333:6333"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  magpie:
+    image: ghcr.io/yetone/magpie:latest
+    container_name: magpie
+    restart: unless-stopped
+    mem_limit: ${MAGPIE_MEM_LIMIT:-256m}
+    command: ["serve", "--web=0.0.0.0:3430"]
+    environment:
+      MAGPIE_WEB_KEY: ${MAGPIE_WEB_KEY:-ltc-magpie-admin}
+    volumes:
+      - magpie-config:/config
+    ports:
+      # 仅绑定宿主机 127.0.0.1，由本机 Nginx 反向代理暴露 HTTPS 域名，禁止公网直连 IP+端口
+      - "127.0.0.1:${MAGPIE_PORT:-3425}:3425"
+      - "127.0.0.1:${MAGPIE_WEB_PORT:-3430}:3430"
+
+  ocr:
+    restart: unless-stopped
+    mem_limit: ${OCR_MEM_LIMIT:-600m}
+    build:
+      context: .
+      dockerfile: Dockerfile.ocr
+    environment:
+      OCR_ONLY: "false"
+      EMBED_MODEL: "BAAI/bge-small-zh-v1.5"
+
+  app:
+    restart: unless-stopped
+    # 显式限制容器内存，让 JVM 的 -XX:MaxRAMPercentage=65 按 1024M 计算（约 665M 堆），防止吃满宿主机物理内存触发 OOM
+    mem_limit: ${APP_MEM_LIMIT:-1024m}
+    build:
+      context: .
+      dockerfile: ${APP_DOCKERFILE:-Dockerfile.runtime}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      SERVER_PORT: "8080"
+      # 默认通过 host.docker.internal 直连宿主机已有的 MySQL 8.0（省下 400M+ 容器内存）
+      MYSQL_HOST: ${MYSQL_HOST:-host.docker.internal}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DB: ${MYSQL_DB:-ltc_rag}
+      MYSQL_USER: ${MYSQL_USER:-ltc_rag}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-ltc_chunks}
+      # 检索开关：任一关掉就优雅退回纯 MySQL 全文（BM25）模式
+      QDRANT_ENABLED: ${QDRANT_ENABLED:-true}
+      EMBEDDING_ENABLED: ${EMBEDDING_ENABLED:-true}
+      # 图片 OCR：指向同栈的轻量 ocr 容器（懒加载，空闲仅 ~45MB 内存）
+      OCR_ENABLED: ${OCR_ENABLED:-true}
+      OCR_BASE_URL: ${OCR_BASE_URL:-http://ocr:8091}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-40}
+      # 模型：默认走同栈的本地 CPU Embedding 服务（BAAI/bge-small-zh-v1.5，512 维，彻底零外部 Key 依赖）
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://ocr:8091/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-local}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-512}
+      CHAT_BASE_URL: ${CHAT_BASE_URL}
+      CHAT_API_KEY: ${CHAT_API_KEY}
+      CHAT_MODEL: ${CHAT_MODEL:-deepseek-ai/DeepSeek-V3}
+      RERANK_ENABLED: ${RERANK_ENABLED:-true}
+      RERANK_BASE_URL: ${RERANK_BASE_URL:-https://api.siliconflow.cn/v1}
+      RERANK_API_KEY: ${RERANK_API_KEY}
+      RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+    depends_on:
+      qdrant:
+        condition: service_started
+    ports:
+      # 仅绑定宿主机 127.0.0.1，由本机 Nginx (rag.932000.xyz) 反向代理访问，不暴露公网端口
+      - "127.0.0.1:${APP_PORT:-8082}:8080"
+
+volumes:
+  qdrant-data:
+  magpie-config:

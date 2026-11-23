@@ -1,0 +1,16 @@
+# Docker 构建上下文瘦身：只留构建真正需要的文件
+# 注意：Dockerfile.runtime 需要 target/ltc-rag.jar，所以不能整个排除 target/
+.localdb/
+.git/
+.idea/
+.vscode/
+deploy/
+*.log
+.env
+target/classes/
+target/test-classes/
+target/generated-sources/
+target/generated-test-sources/
+target/maven-archiver/
+target/maven-status/
+target/*.original

@@ -1,0 +1,20 @@
+target/
+*.class
+*.log
+.env
+# 生产环境 .env（含明文密钥，只留在本机）
+deploy/.env.server
+.idea/
+*.iml
+.vscode/
+.DS_Store
+data/
+
+# 本地轻量模式的 MySQL 数据与日志
+.localdb/
+
+# Python（scripts/embed_server.py 跑起来会生成）
+__pycache__/
+*.pyc
+.venv/
+

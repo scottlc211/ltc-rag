@@ -1,0 +1,22 @@
+# 本地 embedding + OCR 服务的依赖（scripts/embed_server.py）
+#
+# 安装：D:\ltc-ocr\venv\Scripts\python.exe -m pip install -r scripts\requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+#
+# 只装这些约 400MB（onnxruntime + 模型），不需要 GPU、不需要 torch。
+# 如果还要离线把 PDF/扫描件转 Markdown（scripts/pdf2md.ps1），再跑 scripts/setup-docling.ps1
+# —— 那个会额外装 torch + docling，约 2.5GB，只装开发机，别装服务器。
+
+# 向量化：ONNXRuntime 后端，不拖 torch
+fastembed==0.9.1
+onnxruntime==1.31.1
+
+# OCR：直接上传 png/jpg 时用，和 embedding 共用同一个进程
+rapidocr==3.10.0
+
+# 服务框架
+fastapi==0.162.5
+uvicorn==0.54.0
+
+# 图片读取 / PDF 逐页渲染（img2md.py 用）
+pillow==13.0.0
+pypdfium2==5.15.2
