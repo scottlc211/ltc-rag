@@ -20,7 +20,8 @@ public final class ApiDtos {
     ) {
     }
 
-    public record IngestResponse(DocumentView document, boolean created, boolean changed) {
+    public record IngestResponse(DocumentView document, boolean created, boolean changed,
+                                 int reusedVectors, int embeddedVectors) {
     }
 
     public record DeleteResponse(long id, int deletedVectors) {

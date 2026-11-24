@@ -7,6 +7,7 @@ import com.ltc.rag.service.IngestionService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -39,12 +40,12 @@ public class DocumentController {
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @ResponseStatus(HttpStatus.CREATED)
-    public ApiDtos.IngestResponse upload(@RequestParam("file") MultipartFile file,
+    public ResponseEntity<Object> upload(@RequestParam("file") MultipartFile file,
                                          @RequestParam(required = false) String namespace,
                                          @RequestParam(required = false) String docKey,
                                          @RequestParam(required = false) String title,
-                                         @RequestParam(required = false) String url) {
+                                         @RequestParam(required = false) String url,
+                                         @RequestParam(defaultValue = "false") boolean async) {
         AuthContext.requireAdmin();
         if (file.isEmpty()) {
             throw ApiException.badRequest("EMPTY_FILE", "上传文件为空");
@@ -56,8 +57,41 @@ public class DocumentController {
             throw ApiException.badRequest("READ_FILE_FAILED", "读取上传文件失败：" + e.getMessage());
         }
         String fileName = file.getOriginalFilename() == null ? "upload.bin" : file.getOriginalFilename();
+        if (async) {
+            IngestionService.IngestJobView job = ingestion.submitAsync(namespace, docKey, title, url, fileName, bytes);
+            return ResponseEntity.accepted().body(java.util.Map.of(
+                    "jobId", job.jobId(),
+                    "status", job.status(),
+                    "pollUrl", "/v1/documents/jobs/" + job.jobId()));
+        }
         IngestionService.IngestResult result = ingestion.ingest(namespace, docKey, title, url, fileName, bytes);
-        return new ApiDtos.IngestResponse(result.document(), result.created(), result.changed());
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(new ApiDtos.IngestResponse(result.document(), result.created(), result.changed(),
+                        result.reusedVectors(), result.embeddedVectors()));
+    }
+
+    /** 查询异步入库任务进度（搭配 POST /v1/documents?async=true 使用）。 */
+    @GetMapping("/jobs/{jobId}")
+    public IngestionService.IngestJobView jobStatus(@PathVariable String jobId) {
+        AuthContext.requireCaller();
+        return ingestion.getJob(jobId);
+    }
+
+    /** 解析质量预检：仅在内存中运行解析器与切分器，不落库、不写向量，返回统计与告警。 */
+    @PostMapping(value = "/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public IngestionService.PreviewResult preview(@RequestParam("file") MultipartFile file) {
+        AuthContext.requireAdmin();
+        if (file.isEmpty()) {
+            throw ApiException.badRequest("EMPTY_FILE", "上传文件为空");
+        }
+        byte[] bytes;
+        try {
+            bytes = file.getBytes();
+        } catch (IOException e) {
+            throw ApiException.badRequest("READ_FILE_FAILED", "读取上传文件失败：" + e.getMessage());
+        }
+        String fileName = file.getOriginalFilename() == null ? "upload.bin" : file.getOriginalFilename();
+        return ingestion.preview(fileName, bytes);
     }
 
     /**
@@ -72,7 +106,8 @@ public class DocumentController {
         IngestionService.IngestResult result = ingestion.ingest(
                 request.namespace(), request.docKey(), request.title(), request.url(),
                 name, request.content().getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        return new ApiDtos.IngestResponse(result.document(), result.created(), result.changed());
+        return new ApiDtos.IngestResponse(result.document(), result.created(), result.changed(),
+                result.reusedVectors(), result.embeddedVectors());
     }
 
     @GetMapping
@@ -107,7 +142,8 @@ public class DocumentController {
                                                  @Valid @RequestBody ApiDtos.TextContentRequest request) {
         AuthContext.requireAdmin();
         IngestionService.IngestResult result = ingestion.replaceContent(id, request.content(), request.title());
-        return new ApiDtos.IngestResponse(result.document(), false, result.changed());
+        return new ApiDtos.IngestResponse(result.document(), false, result.changed(),
+                result.reusedVectors(), result.embeddedVectors());
     }
 
     /** 只在末尾追加，不必先读全文再整体回传（Agent 追加 FAQ / 变更记录时更方便）。 */
@@ -116,7 +152,8 @@ public class DocumentController {
                                                 @Valid @RequestBody ApiDtos.TextContentRequest request) {
         AuthContext.requireAdmin();
         IngestionService.IngestResult result = ingestion.appendContent(id, request.content());
-        return new ApiDtos.IngestResponse(result.document(), false, result.changed());
+        return new ApiDtos.IngestResponse(result.document(), false, result.changed(),
+                result.reusedVectors(), result.embeddedVectors());
     }
 
     /**

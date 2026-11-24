@@ -82,4 +82,56 @@ class ChunkerTest {
         Chunker chunker = new Chunker(props(200, 0, 400));
         assertThat(chunker.split("   \n\n  ")).isEmpty();
     }
+
+    @Test
+    void 长表格按行切分时每个子块自动重复表头() {
+        StringBuilder md = new StringBuilder("# 数据库表字典\n| 英文表名 | 中文表名 | 说明 |\n| --- | --- | --- |\n");
+        for (int i = 1; i <= 15; i++) {
+            md.append("| t_table_").append(i).append(" | 业务表").append(i).append(" | 存储第 ").append(i).append(" 个业务模块的数据 |\n");
+        }
+        Chunker chunker = new Chunker(props(180, 0, 600));
+        List<ChunkPiece> pieces = chunker.split(md.toString());
+
+        List<ChunkPiece> tables = pieces.stream().filter(p -> ChunkPiece.TABLE.equals(p.type())).toList();
+        assertThat(tables.size()).isGreaterThan(1);
+        assertThat(tables).allSatisfy(t -> {
+            assertThat(t.content()).contains("| 英文表名 | 中文表名 | 说明 |");
+            assertThat(t.content()).contains("| --- | --- | --- |");
+            assertThat(t.contentHash()).hasSize(64);
+        });
+    }
+
+    @Test
+    void 长代码块切分时每段自动补齐开合围栏() {
+        StringBuilder md = new StringBuilder("# 示例代码\n```java\n");
+        for (int i = 1; i <= 12; i++) {
+            md.append("public void method").append(i).append("() { System.out.println(\"line ").append(i).append("\"); }\n");
+        }
+        md.append("```\n");
+
+        Chunker chunker = new Chunker(props(180, 0, 600));
+        List<ChunkPiece> pieces = chunker.split(md.toString());
+
+        List<ChunkPiece> codes = pieces.stream().filter(p -> ChunkPiece.CODE.equals(p.type())).toList();
+        assertThat(codes.size()).isGreaterThan(1);
+        assertThat(codes).allSatisfy(c -> {
+            assertThat(c.content()).contains("```java\n");
+            assertThat(c.content()).endsWith("\n```");
+        });
+    }
+
+    @Test
+    void 传入PDF页偏移时准确映射分块页码() {
+        String p1 = "# 第一章\n第一页的正文内容。";
+        String p2 = "\n\n# 第二章\n第二页的正文内容。";
+        String full = p1 + p2;
+        List<Integer> offsets = List.of(0, p1.length());
+
+        Chunker chunker = new Chunker(props(200, 0, 400));
+        List<ChunkPiece> pieces = chunker.split(full, offsets);
+
+        assertThat(pieces).hasSize(2);
+        assertThat(pieces.get(0).pageNo()).isEqualTo(1);
+        assertThat(pieces.get(1).pageNo()).isEqualTo(2);
+    }
 }

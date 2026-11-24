@@ -14,6 +14,7 @@ public record Citation(
         String headingPath,
         String url,
         double score,
-        String snippet
+        String snippet,
+        Integer page
 ) {
 }

@@ -247,16 +247,28 @@
           <p>同一个 docKey 重复上传视为版本更新，旧分块与旧向量会被自动清理。</p>
         </div>
         <div class="controls">
-          <input id="nsFilter" placeholder="按命名空间筛选（留空=全部）" style="width:200px">
+          <select id="nsFilter" style="width:190px" title="按命名空间筛选"></select>
           <input id="keyPrefix" placeholder="docKey 前缀" value="ltc/" style="width:130px">
           <button class="btn ghost sm" id="refreshDocs">刷新</button>
         </div>
       </div>
+      <div class="controls" style="margin-bottom:10px;justify-content:flex-start">
+        <span class="tag" title="文档会入库到这个知识库">上传到</span>
+        <select id="uploadNs" style="width:200px"></select>
+        <button class="btn ghost sm" id="newNsBtn" title="新建知识库，建完立即可选">＋ 新建知识库</button>
+      </div>
       <div class="drop" id="dropZone">
         <strong id="dropTitle">拖拽文件到此处，或点击选择</strong>
-        <span id="dropHint">支持 md / txt / docx / xlsx / xls / pdf / html / png / jpg，单文件 ≤ 40MB；图片会自动 OCR</span>
+        <span id="dropHint">支持 md / txt / docx / xlsx / xls / pdf / html / png / jpg，单文件 ≤ 40MB；文档内嵌图片与截图会自动 OCR</span>
         <input type="file" id="fileInput" multiple class="hidden"
                accept=".md,.markdown,.txt,.docx,.xlsx,.xls,.pdf,.html,.htm,.png,.jpg,.jpeg,.bmp,.webp,.tif,.tiff">
+      </div>
+      <div id="uploadErrors" class="card hidden" style="border-color:rgba(255,107,107,.5);background:rgba(255,107,107,.08);margin-bottom:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <strong style="color:var(--danger);font-size:13px">上传失败详情</strong>
+          <button type="button" class="link-btn" id="clearUploadErr">关闭</button>
+        </div>
+        <div id="uploadErrorList" style="font-size:12.5px;color:#ffc9c9;display:flex;flex-direction:column;gap:4px"></div>
       </div>
       <div class="table-wrap">
         <table>
@@ -406,6 +418,7 @@ const state = {
   key: localStorage.getItem('ltc.key') || '',
   me: null,
   namespace: '',
+  uploadNamespace: 'ltc',
   namespaces: [],
   view: 'chat',
   streaming: false,
@@ -610,29 +623,93 @@ async function loadNamespaces() {
     state.namespaces = await api('/v1/namespaces');
   } catch { state.namespaces = []; }
 
+  // 问答页的知识库选择：空值表示"全部"，提交时展开成 ['*'] 交给后端
   const select = $('#nsSelect');
   const current = select.value;
   select.innerHTML = '';
   const all = document.createElement('option');
   all.value = ''; all.textContent = '全部知识库';
   select.appendChild(all);
+
+  // 文档库的筛选下拉：'*' 显式表示全部，避免"空值=全部"的歧义
+  const filter = $('#nsFilter');
+  const filterCurrent = filter.value || '*';
+  filter.innerHTML = '';
+  const optAll = document.createElement('option');
+  optAll.value = '*'; optAll.textContent = '全部知识库';
+  filter.appendChild(optAll);
+
+  // 上传目标下拉：只列具体库，不提供"全部"（传不到"全部"里去）
+  const upload = $('#uploadNs');
+  const uploadCurrent = upload.value || state.uploadNamespace || 'ltc';
+  upload.innerHTML = '';
+
   state.namespaces.forEach(ns => {
+    const label = `${ns.namespace}（${ns.docs} 篇）`;
+
     const opt = document.createElement('option');
-    opt.value = ns.namespace;
-    opt.textContent = `${ns.namespace}（${ns.docs} 篇）`;
+    opt.value = ns.namespace; opt.textContent = label;
     select.appendChild(opt);
+
+    const optFilter = document.createElement('option');
+    optFilter.value = ns.namespace; optFilter.textContent = label;
+    filter.appendChild(optFilter);
+
+    const optUpload = document.createElement('option');
+    optUpload.value = ns.namespace; optUpload.textContent = label;
+    upload.appendChild(optUpload);
   });
+
   select.value = current || '';
   state.namespace = select.value;
+
+  filter.value = [...filter.options].some(o => o.value === filterCurrent) ? filterCurrent : '*';
+
+  const exists = [...upload.options].some(o => o.value === uploadCurrent);
+  upload.value = exists ? uploadCurrent : (upload.options[0] ? upload.options[0].value : 'ltc');
+  state.uploadNamespace = upload.value;
 }
+
 $('#nsSelect').addEventListener('change', e => { state.namespace = e.target.value; });
 $('#topKSelect').addEventListener('change', e => { state.topK = Number(e.target.value); });
+
+// 上传目标变了，docKey 前缀跟着走：只在"前缀看起来还是旧的库名"时才自动改，
+// 避免覆盖用户手动输入的命名（如 docs/）
+$('#uploadNs').addEventListener('change', e => {
+  const next = e.target.value;
+  const prefix = $('#keyPrefix');
+  const old = state.uploadNamespace;
+  if (!prefix.value.trim() || prefix.value.trim() === `${old}/` || prefix.value.trim() === `${old}`) {
+    prefix.value = `${next}/`;
+  }
+  state.uploadNamespace = next;
+});
+
+// 新建知识库：先建后上传，建完自动选中，省得再去下拉里找
+$('#newNsBtn').addEventListener('click', async () => {
+  const name = prompt('新建知识库名称（小写字母/数字/-/_/. ，例如 crm-flow）');
+  if (!name || !name.trim()) return;
+  const description = prompt('一句话说明（可留空）') || '';
+  try {
+    const r = await api('/v1/namespaces', { method: 'POST', body: { name: name.trim(), description } });
+    await loadNamespaces();
+    const upload = $('#uploadNs');
+    upload.value = r.namespace;
+    state.uploadNamespace = r.namespace;
+    $('#keyPrefix').value = `${r.namespace}/`;
+    toast(r.created ? `已创建知识库 ${r.namespace}` : `知识库 ${r.namespace} 已存在`);
+    loadDocs();
+  } catch (e) {
+    toast('创建失败：' + e.message, true);
+  }
+});
 
 async function loadDocs() {
   const body = $('#docBody');
   body.innerHTML = `<tr><td colspan="7" class="empty">加载中…</td></tr>`;
   const filter = $('#nsFilter').value.trim();
   try {
+    // '*' 交给后端展开成全部命名空间；不传则后端会落到默认库，这不是"全部"
     const docs = await api('/v1/documents?limit=200' + (filter ? `&namespace=${encodeURIComponent(filter)}` : ''));
     if (!docs.length) {
       body.innerHTML = `<tr><td colspan="7" class="empty">还没有文档，拖一个文件到上方试试</td></tr>`;
@@ -673,7 +750,7 @@ async function loadDocs() {
   }
 }
 $('#refreshDocs').addEventListener('click', loadDocs);
-$('#nsFilter').addEventListener('keydown', e => { if (e.key === 'Enter') loadDocs(); });
+$('#nsFilter').addEventListener('change', loadDocs);
 
 /* ---- 上传 ---- */
 const dropZone = $('#dropZone');
@@ -684,32 +761,77 @@ fileInput.addEventListener('change', () => { uploadFiles(fileInput.files); fileI
 ['dragleave', 'drop'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove('over'); }));
 dropZone.addEventListener('drop', e => uploadFiles(e.dataTransfer.files));
 
+async function pollIngestJob(jobId) {
+  for (let i = 0; i < 180; i++) {
+    await new Promise(r => setTimeout(r, 1500));
+    const job = await api('/v1/documents/jobs/' + encodeURIComponent(jobId));
+    if (job.status === 'SUCCEEDED') return job.result;
+    if (job.status === 'FAILED') throw new Error(job.error || '后台入库失败');
+  }
+  throw new Error('入库轮询超时，请稍后刷新文档库确认');
+}
+
+$('#clearUploadErr').addEventListener('click', () => {
+  $('#uploadErrors').classList.add('hidden');
+  $('#uploadErrorList').innerHTML = '';
+});
+
 async function uploadFiles(files) {
   if (!files || !files.length) return;
   const prefix = $('#keyPrefix').value.trim();
-  let ok = 0, skipped = 0;
+  let ok = 0, skipped = 0, failed = 0;
+  const errors = [];
+  $('#uploadErrors').classList.add('hidden');
+  $('#uploadErrorList').innerHTML = '';
+
   for (const file of files) {
     const base = file.name.replace(/\.[^.]+$/, '');
     const form = new FormData();
     form.append('file', file, file.name);
     form.append('docKey', prefix + base);
     form.append('title', base);
-    if (state.namespace) form.append('namespace', state.namespace);
+    if (state.uploadNamespace) form.append('namespace', state.uploadNamespace);
+    // 超过 3MB 的文档（尤其是带图 Word / 扫描 PDF）自动走异步入库，防止 Cloudflare 100s 超时
+    const useAsync = file.size > 3 * 1024 * 1024 || /\.(pdf|docx)$/i.test(file.name);
     $('#dropTitle').textContent = `正在入库：${file.name}`;
-    $('#dropHint').textContent = '解析 → 切分 → 向量化，大文件可能需要几十秒';
+    $('#dropHint').textContent = useAsync
+      ? '后台异步解析中（支持文档内嵌图片自动 OCR），请稍候…'
+      : '解析 → 切分 → 向量化，请稍候…';
     try {
-      const r = await api('/v1/documents', { method: 'POST', form });
-      if (r.changed) { ok++; toast(`《${file.name}》入库完成，${r.document.chunkCount} 个分块`); }
-      else { skipped++; toast(`《${file.name}》内容未变，已跳过`); }
+      let r = await api('/v1/documents' + (useAsync ? '?async=true' : ''), { method: 'POST', form });
+      if (useAsync && r.jobId) {
+        r = await pollIngestJob(r.jobId);
+      }
+      if (r.changed) {
+        ok++;
+        const reuseNote = r.reusedVectors > 0 ? `（复用 ${r.reusedVectors} / 新算 ${r.embeddedVectors}）` : '';
+        toast(`《${file.name}》入库完成，${r.document.chunkCount} 个分块${reuseNote}`);
+      } else {
+        skipped++;
+        toast(`《${file.name}》内容未变，已跳过`);
+      }
     } catch (e) {
-      toast(`《${file.name}》失败：${e.message}`, true);
+      failed++;
+      errors.push({ name: file.name, message: e.message || '未知错误' });
     }
   }
   // 只改文案，不重建 DOM —— 否则 input 与拖拽监听都会随 innerHTML 一起丢掉
   $('#dropTitle').textContent = '拖拽文件到此处，或点击选择';
-  $('#dropHint').textContent = '支持 md / txt / docx / xlsx / xls / pdf / html，单文件 ≤ 40MB';
+  $('#dropHint').textContent = '支持 md / txt / docx / xlsx / xls / pdf / html / png / jpg，单文件 ≤ 40MB；文档内嵌图片与截图会自动 OCR';
   loadDocs(); loadNamespaces();
-  toast(`本次完成 ${ok} 个，跳过 ${skipped} 个`);
+
+  if (failed > 0) {
+    $('#uploadErrorList').innerHTML = errors
+      .map(err => `<div>• <strong>${esc(err.name)}</strong>：${esc(err.message)}</div>`)
+      .join('');
+    $('#uploadErrors').classList.remove('hidden');
+    const summary = failed === 1 && ok === 0 && skipped === 0
+      ? `《${errors[0].name}》失败：${errors[0].message}`
+      : `完成 ${ok} 个，跳过 ${skipped} 个，失败 ${failed} 个（详见上方红色提示）`;
+    toast(summary, true);
+  } else if (files.length > 1) {
+    toast(`本次完成 ${ok} 个，跳过 ${skipped} 个`);
+  }
 }
 
 /* =====================================================================
@@ -857,6 +979,7 @@ function renderCitations(bubble, citations, stats, grounded) {
         <div class="cite-head">
           <span class="idx">${c.index}</span>
           <span class="title">${esc(c.title)}</span>
+          ${c.page != null ? `<span class="tag">第 ${c.page} 页</span>` : ''}
           <span class="score">${Number(c.score || 0).toFixed(3)}</span>
         </div>
         ${c.headingPath ? `<div class="cite-path">${esc(c.headingPath)}</div>` : ''}
@@ -904,7 +1027,7 @@ async function ask() {
     const res = await fetch('/v1/qa/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': state.key },
-      body: JSON.stringify({ question, namespaces: state.namespace ? [state.namespace] : [], topK: state.topK }),
+      body: JSON.stringify({ question, namespaces: state.namespace ? [state.namespace] : ['*'], topK: state.topK }),
     });
     if (!res.ok) {
       const text = await res.text();
@@ -977,7 +1100,7 @@ $('#submitTask').addEventListener('click', async () => {
       method: 'POST',
       body: {
         question,
-        namespaces: state.namespace ? [state.namespace] : [],
+        namespaces: state.namespace ? [state.namespace] : ['*'],
         callbackUrl: callbackUrl || null,
       },
     });

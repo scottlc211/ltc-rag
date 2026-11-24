@@ -15,7 +15,9 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * 文档 / 分块 / 检索的持久层。
@@ -28,7 +30,7 @@ public class KnowledgeRepository {
 
     public record DocRow(
             long id, String docKey, String namespace, String title, String format, String originUrl,
-            String contentHash, int version, String status, int chunkCount, int charCount,
+            String contentHash, String sourceHash, int version, String status, int chunkCount, int charCount,
             String error, LocalDateTime updatedAt) {
     }
 
@@ -36,16 +38,16 @@ public class KnowledgeRepository {
     }
 
     public record FulltextHit(long chunkId, long docId, String title, String headingPath,
-                              String content, String originUrl, double score) {
+                              String content, String originUrl, Integer pageNo, double score) {
     }
 
     /** 向量 ID 回表结果：以数据库为准，Qdrant 里残留的孤儿向量会被自然丢弃。 */
     public record ChunkWithDoc(String vectorId, long chunkId, long docId, String title,
-                               String headingPath, String content, String originUrl) {
+                               String headingPath, String content, String originUrl, Integer pageNo) {
     }
 
     /** 子块 → 父块 的上下文回填。 */
-    public record ParentRef(long childId, long parentId, String headingPath, String content) {
+    public record ParentRef(long childId, long parentId, String headingPath, String content, Integer pageNo) {
     }
 
     private static final RowMapper<DocRow> DOC_MAPPER = (rs, i) -> new DocRow(
@@ -56,6 +58,7 @@ public class KnowledgeRepository {
             rs.getString("doc_format"),
             rs.getString("origin_url"),
             rs.getString("content_hash"),
+            rs.getString("source_hash"),
             rs.getInt("version"),
             rs.getString("status"),
             rs.getInt("chunk_count"),
@@ -72,7 +75,7 @@ public class KnowledgeRepository {
     public Optional<DocRow> findDoc(String namespace, String docKey) {
         List<DocRow> rows = jdbc.query(
                 """
-                SELECT id, doc_key, namespace, title, doc_format, origin_url, content_hash,
+                SELECT id, doc_key, namespace, title, doc_format, origin_url, content_hash, source_hash,
                        version, status, chunk_count, char_count, error, updated_at
                 FROM kb_document WHERE namespace = ? AND doc_key = ?
                 """, DOC_MAPPER, namespace, docKey);
@@ -82,7 +85,7 @@ public class KnowledgeRepository {
     public Optional<DocRow> findDocById(long id) {
         List<DocRow> rows = jdbc.query(
                 """
-                SELECT id, doc_key, namespace, title, doc_format, origin_url, content_hash,
+                SELECT id, doc_key, namespace, title, doc_format, origin_url, content_hash, source_hash,
                        version, status, chunk_count, char_count, error, updated_at
                 FROM kb_document WHERE id = ?
                 """, DOC_MAPPER, id);
@@ -90,14 +93,14 @@ public class KnowledgeRepository {
     }
 
     public long insertDoc(String namespace, String docKey, String title, String format, String originUrl,
-                          String contentHash, String rawContent) {
+                          String contentHash, String sourceHash, String rawContent) {
         KeyHolder holder = new GeneratedKeyHolder();
         jdbc.update(conn -> {
             PreparedStatement ps = conn.prepareStatement("""
                     INSERT INTO kb_document
-                        (doc_key, namespace, title, doc_format, origin_url, content_hash,
+                        (doc_key, namespace, title, doc_format, origin_url, content_hash, source_hash,
                          version, status, chunk_count, char_count, raw_content)
-                    VALUES (?, ?, ?, ?, ?, ?, 0, 'INDEXING', 0, 0, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'INDEXING', 0, 0, ?)
                     """, Statement.RETURN_GENERATED_KEYS);
             ps.setString(1, docKey);
             ps.setString(2, namespace);
@@ -105,7 +108,8 @@ public class KnowledgeRepository {
             ps.setString(4, format);
             ps.setString(5, originUrl);
             ps.setString(6, contentHash);
-            ps.setString(7, rawContent);
+            ps.setString(7, sourceHash);
+            ps.setString(8, rawContent);
             return ps;
         }, holder);
         Number key = holder.getKey();
@@ -116,7 +120,8 @@ public class KnowledgeRepository {
     }
 
     /** 重建期间置为 INDEXING：检索层会过滤掉它，避免读到"半新半旧"的碎片。 */
-    public void markIndexing(long id) {        jdbc.update("UPDATE kb_document SET status = 'INDEXING', error = NULL WHERE id = ?", id);
+    public void markIndexing(long id) {
+        jdbc.update("UPDATE kb_document SET status = 'INDEXING', error = NULL WHERE id = ?", id);
     }
 
     public void restoreReady(long id) {
@@ -124,14 +129,14 @@ public class KnowledgeRepository {
     }
 
     public void finishDoc(long id, String title, String format, String originUrl, String contentHash,
-                          int chunkCount, int charCount, String rawContent) {
+                          String sourceHash, int chunkCount, int charCount, String rawContent) {
         jdbc.update("""
                 UPDATE kb_document
-                   SET title = ?, doc_format = ?, origin_url = ?, content_hash = ?,
+                   SET title = ?, doc_format = ?, origin_url = ?, content_hash = ?, source_hash = ?,
                        version = version + 1, status = 'READY', chunk_count = ?, char_count = ?,
                        raw_content = ?, error = NULL
                  WHERE id = ?
-                """, title, format, originUrl, contentHash, chunkCount, charCount, rawContent, id);
+                """, title, format, originUrl, contentHash, sourceHash, chunkCount, charCount, rawContent, id);
     }
 
     /** 原文（解析后的 Markdown）。旧版本入库的文档这一列为空，前端要能区分。 */
@@ -150,7 +155,24 @@ public class KnowledgeRepository {
     }
 
     /**
-     * 删除某文档的全部分块，返回被删分块的向量 ID（调用方随后去 Qdrant 清理）。
+     * 查询某文档当前已入库分块的 (content_hash -> vector_id) 映射，供增量更新时原位复用 Qdrant 向量。
+     */
+    public java.util.Map<String, String> findExistingVectorsByHash(long docId) {
+        java.util.Map<String, String> map = new java.util.HashMap<>();
+        jdbc.query(
+                "SELECT content_hash, vector_id FROM kb_chunk WHERE doc_id = ? AND content_hash IS NOT NULL AND vector_id IS NOT NULL",
+                rs -> {
+                    String h = rs.getString("content_hash");
+                    String v = rs.getString("vector_id");
+                    if (h != null && v != null) {
+                        map.putIfAbsent(h, v);
+                    }
+                }, docId);
+        return map;
+    }
+
+    /**
+     * 删除某文档的全部分块，返回被删分块的向量 ID（调用方随后去 Qdrant 清理未复用的旧向量）。
      */
     public List<String> deleteChunks(long docId) {
         List<String> vectorIds = jdbc.query(
@@ -161,13 +183,15 @@ public class KnowledgeRepository {
     }
 
     public long insertChunk(long docId, String chunkType, int chunkIndex, Long parentId,
-                            String headingPath, String content, int charCount, String vectorId) {
+                            String headingPath, String content, int charCount,
+                            String contentHash, Integer pageNo, String vectorId) {
         KeyHolder holder = new GeneratedKeyHolder();
         jdbc.update(conn -> {
             PreparedStatement ps = conn.prepareStatement("""
                     INSERT INTO kb_chunk
-                        (doc_id, chunk_type, chunk_index, parent_id, heading_path, content, char_count, vector_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (doc_id, chunk_type, chunk_index, parent_id, heading_path, content,
+                         char_count, content_hash, page_no, vector_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, Statement.RETURN_GENERATED_KEYS);
             ps.setLong(1, docId);
             ps.setString(2, chunkType);
@@ -180,7 +204,13 @@ public class KnowledgeRepository {
             ps.setString(5, headingPath);
             ps.setString(6, content);
             ps.setInt(7, charCount);
-            ps.setString(8, vectorId);
+            ps.setString(8, contentHash);
+            if (pageNo == null) {
+                ps.setNull(9, java.sql.Types.INTEGER);
+            } else {
+                ps.setInt(9, pageNo);
+            }
+            ps.setString(10, vectorId);
             return ps;
         }, holder);
         Number key = holder.getKey();
@@ -190,13 +220,19 @@ public class KnowledgeRepository {
         return key.longValue();
     }
 
+    /**
+     * 文档列表。namespace 传 "*" 表示跨全部命名空间（前端"全部"选项用），
+     * 其余值按命名空间精确过滤。
+     */
     public List<DocumentView> listDocs(String namespace, int limit) {
-        return jdbc.query("""
+        boolean all = "*".equals(namespace);
+        String sql = """
                 SELECT id, namespace, doc_key, title, doc_format, version, status,
                        chunk_count, char_count, origin_url, error, updated_at
-                FROM kb_document WHERE namespace = ?
-                ORDER BY updated_at DESC LIMIT ?
-                """, (rs, i) -> new DocumentView(
+                FROM kb_document
+                """ + (all ? "" : " WHERE namespace = ? ") + " ORDER BY updated_at DESC LIMIT ?";
+        Object[] args = all ? new Object[]{limit} : new Object[]{namespace, limit};
+        return jdbc.query(sql, (rs, i) -> new DocumentView(
                 rs.getLong("id"),
                 rs.getString("namespace"),
                 rs.getString("doc_key"),
@@ -208,7 +244,7 @@ public class KnowledgeRepository {
                 rs.getInt("char_count"),
                 rs.getString("origin_url"),
                 rs.getString("error"),
-                rs.getTimestamp("updated_at").toLocalDateTime()), namespace, limit);
+                rs.getTimestamp("updated_at").toLocalDateTime()), args);
     }
 
     public void deleteDoc(long id) {
@@ -227,11 +263,11 @@ public class KnowledgeRepository {
         }
         String placeholders = String.join(",", Collections.nCopies(namespaces.size(), "?"));
         String sql = """
-                SELECT c.id, c.doc_id, c.heading_path, c.content, d.title, d.origin_url,
+                SELECT c.id, c.doc_id, c.heading_path, c.content, c.page_no, d.title, d.origin_url,
                        MATCH(c.content) AGAINST (?) AS score
                 FROM kb_chunk c
                 JOIN kb_document d ON d.id = c.doc_id
-                WHERE c.chunk_type = 'CHILD'
+                WHERE c.chunk_type IN ('CHILD', 'CODE', 'TABLE')
                   AND d.status = 'READY'
                   AND d.namespace IN (%s)
                   AND MATCH(c.content) AGAINST (?)
@@ -252,6 +288,7 @@ public class KnowledgeRepository {
                 rs.getString("heading_path"),
                 rs.getString("content"),
                 rs.getString("origin_url"),
+                (Integer) rs.getObject("page_no"),
                 rs.getDouble("score")), args.toArray());
     }
 
@@ -275,14 +312,63 @@ public class KnowledgeRepository {
     }
 
     public List<NamespaceStat> listNamespaces() {
+        // 注册表 ∪ 实际有文档的库：先建的空库也要出现在下拉框里，否则"先建库再上传"无从操作。
+        // 文档数仍从 kb_document 实时统计，注册表只负责"这个名字存在过"。
         return jdbc.query("""
-                SELECT d.namespace AS ns, COUNT(*) AS docs, COALESCE(SUM(d.chunk_count), 0) AS chunks
-                FROM kb_document d
-                WHERE d.status = 'READY'
-                GROUP BY d.namespace
-                ORDER BY docs DESC
+                SELECT ns.name AS ns,
+                       COALESCE(d.docs, 0) AS docs,
+                       COALESCE(d.chunks, 0) AS chunks
+                FROM kb_namespace ns
+                LEFT JOIN (
+                    SELECT namespace, COUNT(*) AS docs, COALESCE(SUM(chunk_count), 0) AS chunks
+                    FROM kb_document
+                    WHERE status = 'READY'
+                    GROUP BY namespace
+                ) d ON d.namespace = ns.name
+                UNION ALL
+                SELECT d2.namespace AS ns, COUNT(*) AS docs, COALESCE(SUM(d2.chunk_count), 0) AS chunks
+                FROM kb_document d2
+                WHERE d2.status = 'READY'
+                  AND NOT EXISTS (SELECT 1 FROM kb_namespace n2 WHERE n2.name = d2.namespace)
+                GROUP BY d2.namespace
+                ORDER BY docs DESC, ns ASC
                 """, (rs, i) -> new NamespaceStat(
                 rs.getString("ns"), rs.getLong("docs"), rs.getLong("chunks")));
+    }
+
+    /** 命名空间名合法性：允许字母（含中文）、数字、- _ .，长度 1~64。 */
+    private static final Pattern NAMESPACE_PATTERN =
+            Pattern.compile("^[\\p{L}\\p{N}][\\p{L}\\p{N}._-]{0,63}$");
+
+    /**
+     * 新建命名空间；同名已存在时只更新说明，不报错（幂等）。
+     *
+     * @return true=本次新建；false=已存在，仅更新了说明
+     */
+    public boolean createNamespace(String rawName, String description) {
+        String name = normalizeNamespaceName(rawName);
+        boolean exists = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM kb_namespace WHERE name = ?", Integer.class, name) > 0;
+        jdbc.update("""
+                INSERT INTO kb_namespace (name, description) VALUES (?, ?)
+                ON DUPLICATE KEY UPDATE description = VALUES(description)
+                """, name, description == null ? "" : description.strip());
+        return !exists;
+    }
+
+    /**
+     * 命名空间名规范化：去空格 + 统一小写（与入库时的处理保持一致），并校验字符合法性。
+     * 小写是为了避免 "CRM" 和 "crm" 变成两个库。
+     */
+    public static String normalizeNamespaceName(String rawName) {
+        if (rawName == null || rawName.isBlank()) {
+            throw new IllegalArgumentException("命名空间名称不能为空");
+        }
+        String name = rawName.strip().toLowerCase(Locale.ROOT);
+        if (!NAMESPACE_PATTERN.matcher(name).matches()) {
+            throw new IllegalArgumentException("命名空间名称只允许字母、数字、-、_、.，且长度不超过 64");
+        }
+        return name;
     }
 
     public void touchDocument(long docId) {
@@ -300,7 +386,7 @@ public class KnowledgeRepository {
         }
         String placeholders = String.join(",", Collections.nCopies(vectorIds.size(), "?"));
         return jdbc.query("""
-                SELECT c.vector_id, c.id, c.doc_id, c.heading_path, c.content, d.title, d.origin_url
+                SELECT c.vector_id, c.id, c.doc_id, c.heading_path, c.content, c.page_no, d.title, d.origin_url
                 FROM kb_chunk c
                 JOIN kb_document d ON d.id = c.doc_id
                 WHERE d.status = 'READY' AND c.vector_id IN (%s)
@@ -312,7 +398,8 @@ public class KnowledgeRepository {
                         rs.getString("title"),
                         rs.getString("heading_path"),
                         rs.getString("content"),
-                        rs.getString("origin_url")),
+                        rs.getString("origin_url"),
+                        (Integer) rs.getObject("page_no")),
                 vectorIds.toArray());
     }
 
@@ -322,7 +409,7 @@ public class KnowledgeRepository {
         }
         String placeholders = String.join(",", Collections.nCopies(childIds.size(), "?"));
         return jdbc.query("""
-                SELECT c.id AS child_id, p.id AS parent_id, p.heading_path, p.content
+                SELECT c.id AS child_id, p.id AS parent_id, p.heading_path, p.content, p.page_no
                 FROM kb_chunk c
                 JOIN kb_chunk p ON p.id = c.parent_id
                 WHERE c.id IN (%s)
@@ -331,7 +418,8 @@ public class KnowledgeRepository {
                         rs.getLong("child_id"),
                         rs.getLong("parent_id"),
                         rs.getString("heading_path"),
-                        rs.getString("content")),
+                        rs.getString("content"),
+                        (Integer) rs.getObject("page_no")),
                 childIds.toArray());
     }
 }

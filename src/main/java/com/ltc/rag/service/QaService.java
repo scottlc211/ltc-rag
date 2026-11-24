@@ -131,7 +131,8 @@ public class QaService {
                     candidate.headingPath(),
                     candidate.url(),
                     candidate.score(),
-                    snippet(candidate.content())));
+                    snippet(candidate.content()),
+                    candidate.pageNo()));
         }
         return citations;
     }

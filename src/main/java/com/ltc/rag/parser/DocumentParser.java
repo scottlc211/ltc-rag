@@ -1,5 +1,6 @@
 package com.ltc.rag.parser;
 
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -11,10 +12,15 @@ import java.util.Set;
 public interface DocumentParser {
 
     /**
-     * @param markdown 解析后的 Markdown（标题用 #，表用 |，代码用 ```）
-     * @param format   归一化后的格式标识，如 docx/pdf/md
+     * @param markdown    解析后的 Markdown（标题用 #，表用 |，代码用 ```）
+     * @param format      归一化后的格式标识，如 docx/pdf/md
+     * @param pageOffsets PDF 每页在 markdown 中的起始字符偏移（下标 0 表示第 1 页），非 PDF 为空列表
      */
-    record Parsed(String markdown, String format) {
+    record Parsed(String markdown, String format, List<Integer> pageOffsets) {
+
+        public Parsed(String markdown, String format) {
+            this(markdown, format, List.of());
+        }
     }
 
     /** 支持的扩展名（小写、不含点）。 */

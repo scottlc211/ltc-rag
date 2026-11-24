@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS kb_document (
     title         VARCHAR(255) NOT NULL,
     doc_format    VARCHAR(16)  NOT NULL COMMENT 'md/docx/xlsx/pdf/html/txt',
     origin_url    VARCHAR(1024)         DEFAULT NULL COMMENT '原文链接，用于引用回链',
-    content_hash  CHAR(64)     NOT NULL COMMENT '原文 SHA256，判断是否需要重建',
+    content_hash  CHAR(64)     NOT NULL COMMENT '规范化 Markdown 原文 SHA256，判断是否需要重建',
+    source_hash   CHAR(64)              DEFAULT NULL COMMENT '原件字节 SHA256（上传文件与在线编辑解耦）',
     version       INT          NOT NULL DEFAULT 1,
     status        VARCHAR(16)  NOT NULL COMMENT 'READY / FAILED',
     chunk_count   INT          NOT NULL DEFAULT 0,
@@ -44,7 +45,9 @@ CREATE TABLE IF NOT EXISTS kb_chunk (
     heading_path VARCHAR(512)          DEFAULT NULL COMMENT '标题路径，如 接口规范 > 订单 > 创建订单',
     content      MEDIUMTEXT   NOT NULL,
     char_count   INT          NOT NULL,
-    vector_id    CHAR(36)              DEFAULT NULL COMMENT 'Qdrant point id（仅 CHILD）',
+    content_hash CHAR(64)              DEFAULT NULL COMMENT '分块文本 SHA256，用于增量原位复用 Qdrant vector_id',
+    page_no      INT                   DEFAULT NULL COMMENT 'PDF 起始页码（1-based），非 PDF 为 NULL',
+    vector_id    CHAR(36)              DEFAULT NULL COMMENT 'Qdrant point id（仅叶子块：CHILD/CODE/TABLE）',
     created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
     KEY idx_doc (doc_id, chunk_index),
@@ -151,3 +154,17 @@ CREATE TABLE IF NOT EXISTS kb_config (
     updated_at   DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (config_key)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT '运行期动态配置';
+
+-- ---------------------------------------------------------------------
+-- 命名空间注册表：让知识库可以"先建后用"。
+-- 只从 kb_document 聚合的话，没传过文档的库在下拉框里根本不存在，
+-- 也就没法"先选库再上传"。这里显式登记，文档数仍从 kb_document 实时统计。
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS kb_namespace (
+    name        VARCHAR(64)  NOT NULL COMMENT '命名空间标识（统一小写，字母/数字/-/_/.）',
+    description VARCHAR(255) NOT NULL DEFAULT '' COMMENT '说明，便于区分业务域',
+    created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+    PRIMARY KEY (name)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT '知识库命名空间注册表';
+
+INSERT IGNORE INTO kb_namespace (name, description) VALUES ('ltc', '默认知识库');

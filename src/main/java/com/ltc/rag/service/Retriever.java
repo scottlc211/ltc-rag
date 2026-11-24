@@ -37,7 +37,7 @@ public class Retriever {
     private static final int RERANK_WINDOW = 20;
 
     public record Candidate(long chunkId, long docId, String title, String headingPath,
-                            String content, String url, double score, double rerankScore) {
+                            String content, String url, Integer pageNo, double score, double rerankScore) {
     }
 
     private final EmbeddingClient embeddings;
@@ -148,8 +148,9 @@ public class Retriever {
             String key = acc.docId + ":" + citationChunkId;
 
             if (!deduped.containsKey(key)) {
+                Integer page = acc.pageNo != null ? acc.pageNo : (parent == null ? null : parent.pageNo());
                 deduped.put(key, new Candidate(citationChunkId, acc.docId, acc.title, heading,
-                        content, acc.url, acc.score(), acc.rerankScore));
+                        content, acc.url, page, acc.score(), acc.rerankScore));
             }
             if (deduped.size() >= limit) {
                 break;
@@ -162,11 +163,21 @@ public class Retriever {
         if (namespaces == null || namespaces.isEmpty()) {
             return List.of(props.defaultNamespace());
         }
-        return namespaces.stream()
+        List<String> cleaned = namespaces.stream()
                 .filter(ns -> ns != null && !ns.isBlank())
                 .map(ns -> ns.strip().toLowerCase(Locale.ROOT))
                 .distinct()
                 .toList();
+        // "*" = 跨全部知识库：在这里展开成真实的库名列表。
+        // 下游的 Qdrant payload 过滤和 MySQL IN 都要具体名字，
+        // 统一在入口收口，免得两条检索链路各写一遍"全库"分支。
+        if (cleaned.contains("*")) {
+            List<String> all = repo.listNamespaces().stream()
+                    .map(KnowledgeRepository.NamespaceStat::namespace)
+                    .toList();
+            return all.isEmpty() ? List.of(props.defaultNamespace()) : all;
+        }
+        return cleaned;
     }
 
     /** 融合期的可变累加器：同一个 chunk 可能同时被两路召回。 */
@@ -177,6 +188,7 @@ public class Retriever {
         private final String headingPath;
         private final String content;
         private final String url;
+        private final Integer pageNo;
         private double vectorScore;
         private double fulltextScore;
         private double rrf;
@@ -189,6 +201,7 @@ public class Retriever {
             this.headingPath = chunk.headingPath() == null ? "" : chunk.headingPath();
             this.content = chunk.content();
             this.url = chunk.originUrl();
+            this.pageNo = chunk.pageNo();
         }
 
         private Accumulator(FulltextHit hit) {
@@ -198,6 +211,7 @@ public class Retriever {
             this.headingPath = hit.headingPath() == null ? "" : hit.headingPath();
             this.content = hit.content();
             this.url = hit.originUrl();
+            this.pageNo = hit.pageNo();
         }
 
         private void addVector(double score, double contribution) {
