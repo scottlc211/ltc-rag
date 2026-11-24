@@ -1,11 +1,14 @@
 package com.ltc.rag.api;
 
+import com.ltc.rag.auth.ApiKeyRepository;
 import com.ltc.rag.auth.ApiKeyService;
 import com.ltc.rag.auth.AuthContext;
 import com.ltc.rag.llm.ChatClient;
 import com.ltc.rag.repo.QaLogRepository;
 import com.ltc.rag.repo.TaskRepository;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -25,7 +28,10 @@ import java.util.Map;
 @RequestMapping("/v1/admin")
 public class AdminController {
 
-    public record IssueKeyRequest(String name, String role, Integer quotaPerDay) {
+    public record IssueKeyRequest(String name, String role, Integer quotaPerDay, List<String> allowedNamespaces) {
+    }
+
+    public record UpdateKeyRequest(String status, String role, List<String> allowedNamespaces) {
     }
 
     /** 动态更新 Chat 大模型配置请求体。 */
@@ -49,20 +55,36 @@ public class AdminController {
         this.chatClient = chatClient;
     }
 
+    @GetMapping("/keys")
+    public List<ApiKeyRepository.KeySummary> listKeys() {
+        AuthContext.requireAdmin();
+        return apiKeyService.listKeys();
+    }
+
     @PostMapping("/keys")
     public Map<String, Object> issue(@RequestBody IssueKeyRequest request) {
         AuthContext.requireAdmin();
         String name = request.name() == null || request.name().isBlank() ? "agent" : request.name();
-        String key = apiKeyService.issue(name, request.role(), request.quotaPerDay());
+        String role = "ADMIN".equalsIgnoreCase(request.role()) ? "ADMIN" : "AGENT";
+        List<String> allowed = request.allowedNamespaces() == null ? List.of() : request.allowedNamespaces();
+        String key = apiKeyService.issue(name, role, request.quotaPerDay(), allowed);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("name", name);
-        body.put("role", "ADMIN".equalsIgnoreCase(request.role()) ? "ADMIN" : "AGENT");
+        body.put("role", role);
+        body.put("allowedNamespaces", "ADMIN".equals(role) ? List.of() : allowed);
         if (request.quotaPerDay() != null && request.quotaPerDay() > 0) {
             body.put("quotaPerDay", request.quotaPerDay());
         }
         body.put("key", key);
         body.put("notice", "明文只显示这一次，请立即保存");
         return body;
+    }
+
+    @PatchMapping("/keys/{id}")
+    public Map<String, Object> updateKey(@PathVariable long id, @RequestBody UpdateKeyRequest request) {
+        AuthContext.requireAdmin();
+        apiKeyService.updateKey(id, request.status(), request.role(), request.allowedNamespaces());
+        return Map.of("id", id, "updated", true);
     }
 
     @GetMapping("/stats")

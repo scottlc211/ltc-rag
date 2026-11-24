@@ -5,6 +5,8 @@
 .idea/
 .vscode/
 deploy/
+web/
+knowledge/
 *.log
 .env
 target/classes/

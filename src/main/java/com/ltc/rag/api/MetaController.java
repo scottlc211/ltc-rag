@@ -40,14 +40,21 @@ public class MetaController {
         body.put("name", caller.name());
         body.put("role", caller.role());
         body.put("admin", caller.isAdmin());
+        body.put("allowedNamespaces", caller.isNamespaceRestricted() ? caller.allowedNamespaces() : List.of());
         body.put("chatModel", chatClient.currentSettings().model());
         return body;
     }
 
     @GetMapping("/namespaces")
     public List<KnowledgeRepository.NamespaceStat> namespaces() {
-        AuthContext.requireCaller();
-        return repository.listNamespaces();
+        AuthContext.Caller caller = AuthContext.requireCaller();
+        List<KnowledgeRepository.NamespaceStat> all = repository.listNamespaces();
+        if (!caller.isNamespaceRestricted()) {
+            return all;
+        }
+        return all.stream()
+                .filter(ns -> caller.canAccessNamespace(ns.namespace()))
+                .toList();
     }
 
     /** 新建命名空间的入参；description 可为空。 */

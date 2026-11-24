@@ -43,14 +43,35 @@ public class ApiKeyService {
      * 签发新 Key，返回明文（调用方务必只保存这一次）。
      */
     public String issue(String name, String role) {
-        return issue(name, role, null);
+        return issue(name, role, null, java.util.List.of());
     }
 
     public String issue(String name, String role, Integer quotaPerDay) {
+        return issue(name, role, quotaPerDay, java.util.List.of());
+    }
+
+    public String issue(String name, String role, Integer quotaPerDay, java.util.List<String> allowedNamespaces) {
         String raw = "ltc_" + randomString(40);
         String normalizedRole = "ADMIN".equalsIgnoreCase(role) ? "ADMIN" : "AGENT";
-        repository.insert(name, raw.substring(0, 12), sha256(raw), normalizedRole, quotaPerDay);
+        java.util.List<String> nsList = "ADMIN".equals(normalizedRole) ? java.util.List.of() : allowedNamespaces;
+        repository.insert(name, raw.substring(0, 12), sha256(raw), normalizedRole, quotaPerDay, nsList);
         return raw;
+    }
+
+    public java.util.List<ApiKeyRepository.KeySummary> listKeys() {
+        return repository.listAll();
+    }
+
+    public void updateKey(long id, String status, String role, java.util.List<String> allowedNamespaces) {
+        String normStatus = status == null || status.isBlank() ? null
+                : ("DISABLED".equalsIgnoreCase(status) ? "DISABLED" : "ACTIVE");
+        String normRole = role == null || role.isBlank() ? null
+                : ("ADMIN".equalsIgnoreCase(role) ? "ADMIN" : "AGENT");
+        java.util.List<String> nsList = "ADMIN".equals(normRole) ? java.util.List.of() : allowedNamespaces;
+        int rows = repository.updateKey(id, normStatus, normRole, nsList);
+        if (rows == 0) {
+            throw com.ltc.rag.common.ApiException.notFound("API Key 不存在：id=" + id);
+        }
     }
 
     public Optional<AuthContext.Caller> authenticate(String rawKey) {
@@ -58,7 +79,7 @@ public class ApiKeyService {
                 .filter(row -> "ACTIVE".equalsIgnoreCase(row.status()))
                 .map(row -> {
                     touchThrottled(row.id());
-                    return new AuthContext.Caller(row.id(), row.name(), row.role(), row.quotaPerDay());
+                    return new AuthContext.Caller(row.id(), row.name(), row.role(), row.quotaPerDay(), row.allowedNamespaces());
                 });
     }
 

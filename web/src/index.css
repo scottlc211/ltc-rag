@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0b0f14;
+  --panel: #111821;
+  --panel-2: #16202c;
+  --line: #22303f;
+  --text: #e6edf3;
+  --muted: #8b98a5;
+  --accent: #3fd0c9;
+  --accent-2: #7aa2ff;
+  --danger: #ff6b6b;
+  --warn: #f5c451;
+  --ok: #4ade80;
+}
+
+/* Markdown 正文渲染样式 */
+.md-body p { margin: 0 0 0.6rem; }
+.md-body p:last-child { margin-bottom: 0; }
+.md-body h3, .md-body h4, .md-body h5 { margin: 0.9rem 0 0.45rem; font-weight: 600; color: #f3f7fa; }
+.md-body ul, .md-body ol { margin: 0.4rem 0 0.65rem; padding-left: 1.4rem; }
+.md-body ul { list-style-type: disc; }
+.md-body ol { list-style-type: decimal; }
+.md-body li { margin: 0.2rem 0; }
+.md-body code {
+  background: #0a1219;
+  border: 1px solid #22303f;
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-size: 0.85em;
+  font-family: ui-monospace, Consolas, monospace;
+}
+.md-body pre.code {
+  background: #0a1219;
+  border: 1px solid #22303f;
+  border-radius: 8px;
+  padding: 12px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+.md-body pre.code code { border: 0; background: none; padding: 0; }
+.md-body .cin {
+  color: #3fd0c9;
+  cursor: pointer;
+  font-weight: 600;
+  margin: 0 1px;
+}
+.md-body .cin:hover { text-decoration: underline; }
+.cite-flash { box-shadow: 0 0 0 3px rgba(63, 208, 201, 0.35); }

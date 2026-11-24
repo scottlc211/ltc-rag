@@ -222,16 +222,21 @@ public class KnowledgeRepository {
 
     /**
      * 文档列表。namespace 传 "*" 表示跨全部命名空间（前端"全部"选项用），
-     * 其余值按命名空间精确过滤。
+     * 其余值按命名空间精确过滤。支持 limit + offset 翻页。
      */
     public List<DocumentView> listDocs(String namespace, int limit) {
+        return listDocs(namespace, limit, 0);
+    }
+
+    public List<DocumentView> listDocs(String namespace, int limit, int offset) {
         boolean all = "*".equals(namespace);
+        int safeOffset = Math.max(0, offset);
         String sql = """
                 SELECT id, namespace, doc_key, title, doc_format, version, status,
                        chunk_count, char_count, origin_url, error, updated_at
                 FROM kb_document
-                """ + (all ? "" : " WHERE namespace = ? ") + " ORDER BY updated_at DESC LIMIT ?";
-        Object[] args = all ? new Object[]{limit} : new Object[]{namespace, limit};
+                """ + (all ? "" : " WHERE namespace = ? ") + " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?";
+        Object[] args = all ? new Object[]{limit, safeOffset} : new Object[]{namespace, limit, safeOffset};
         return jdbc.query(sql, (rs, i) -> new DocumentView(
                 rs.getLong("id"),
                 rs.getString("namespace"),
@@ -245,6 +250,39 @@ public class KnowledgeRepository {
                 rs.getString("origin_url"),
                 rs.getString("error"),
                 rs.getTimestamp("updated_at").toLocalDateTime()), args);
+    }
+
+    public List<DocumentView> listDocsInNamespaces(Collection<String> namespaces, int limit) {
+        return listDocsInNamespaces(namespaces, limit, 0);
+    }
+
+    public List<DocumentView> listDocsInNamespaces(Collection<String> namespaces, int limit, int offset) {
+        if (namespaces == null || namespaces.isEmpty()) {
+            return List.of();
+        }
+        int safeOffset = Math.max(0, offset);
+        String placeholders = String.join(",", Collections.nCopies(namespaces.size(), "?"));
+        List<Object> args = new ArrayList<>(namespaces);
+        args.add(limit);
+        args.add(safeOffset);
+        return jdbc.query("""
+                SELECT id, namespace, doc_key, title, doc_format, version, status,
+                       chunk_count, char_count, origin_url, error, updated_at
+                FROM kb_document WHERE namespace IN (%s)
+                ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?
+                """.formatted(placeholders), (rs, i) -> new DocumentView(
+                rs.getLong("id"),
+                rs.getString("namespace"),
+                rs.getString("doc_key"),
+                rs.getString("title"),
+                rs.getString("doc_format"),
+                rs.getInt("version"),
+                rs.getString("status"),
+                rs.getInt("chunk_count"),
+                rs.getInt("char_count"),
+                rs.getString("origin_url"),
+                rs.getString("error"),
+                rs.getTimestamp("updated_at").toLocalDateTime()), args.toArray());
     }
 
     public void deleteDoc(long id) {

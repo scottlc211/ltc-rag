@@ -112,9 +112,10 @@ public class DocumentController {
 
     @GetMapping
     public List<DocumentView> list(@RequestParam(required = false) String namespace,
-                                   @RequestParam(defaultValue = "100") int limit) {
+                                   @RequestParam(defaultValue = "100") int limit,
+                                   @RequestParam(defaultValue = "0") int offset) {
         AuthContext.requireCaller();
-        return ingestion.list(namespace, limit);
+        return ingestion.list(namespace, limit, offset);
     }
 
     @DeleteMapping("/{id}")
@@ -127,8 +128,10 @@ public class DocumentController {
     /** 查看原文：前端"文档库 → 查看/编辑"用，返回解析后的 Markdown。 */
     @GetMapping("/{id}/content")
     public IngestionService.DocContent content(@PathVariable long id) {
-        AuthContext.requireCaller();
-        return ingestion.content(id);
+        AuthContext.Caller caller = AuthContext.requireCaller();
+        IngestionService.DocContent doc = ingestion.content(id);
+        caller.assertCanAccessNamespace(doc.namespace());
+        return doc;
     }
 
     /**

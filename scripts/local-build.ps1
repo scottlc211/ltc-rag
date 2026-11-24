@@ -1,10 +1,28 @@
 ﻿# 构建（本机没有 Maven 时，自动用 ~/.m2/wrapper 里缓存的那个 Maven）
 param(
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$SkipWeb
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+
+# 1. 构建前端 React 静态资源到 src/main/resources/static/
+$webDir = Join-Path $root 'web'
+if (-not $SkipWeb -and (Test-Path (Join-Path $webDir 'package.json'))) {
+    Write-Host "构建前端 React UI ($webDir)..." -ForegroundColor Cyan
+    Push-Location $webDir
+    try {
+        if (-not (Test-Path 'node_modules')) {
+            npm install
+            if ($LASTEXITCODE -ne 0) { throw "前端 npm install 失败，退出码 $LASTEXITCODE" }
+        }
+        npm run build
+        if ($LASTEXITCODE -ne 0) { throw "前端 npm run build 失败，退出码 $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
+}
 
 $mvn = $null
 $cached = Get-ChildItem "$env:USERPROFILE\.m2\wrapper\dists" -Recurse -Filter mvn.cmd -ErrorAction SilentlyContinue |

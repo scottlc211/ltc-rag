@@ -87,7 +87,8 @@ LARGE_PATTERNS = [
 
 def http_json(url, method="POST", body=None, key=None, timeout=300):
     data = None
-    headers = {"Accept": "application/json"}
+    # 显式设置 User-Agent，避免 Python-urllib 默认 UA 触发 Cloudflare 1010 拦截
+    headers = {"Accept": "application/json", "User-Agent": "ltc-rag-pusher/1.0"}
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json; charset=utf-8"

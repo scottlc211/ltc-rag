@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/adminview.tsx","./src/components/chatview.tsx","./src/components/libraryview.tsx","./src/components/loginmodal.tsx","./src/components/tasksview.tsx","./src/components/ui/cold-email-crowd-hero.tsx","./src/lib/api.ts","./src/lib/utils.ts"],"version":"5.9.3"}

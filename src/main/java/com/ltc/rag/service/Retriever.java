@@ -160,17 +160,27 @@ public class Retriever {
     }
 
     private List<String> normalizeNamespaces(List<String> namespaces) {
-        if (namespaces == null || namespaces.isEmpty()) {
-            return List.of(props.defaultNamespace());
-        }
-        List<String> cleaned = namespaces.stream()
+        com.ltc.rag.auth.AuthContext.Caller caller = com.ltc.rag.auth.AuthContext.caller();
+        List<String> cleaned = (namespaces == null) ? List.of() : namespaces.stream()
                 .filter(ns -> ns != null && !ns.isBlank())
                 .map(ns -> ns.strip().toLowerCase(Locale.ROOT))
                 .distinct()
                 .toList();
+
+        if (caller != null && caller.isNamespaceRestricted()) {
+            if (cleaned.isEmpty() || cleaned.contains("*")) {
+                return caller.allowedNamespaces();
+            }
+            for (String ns : cleaned) {
+                caller.assertCanAccessNamespace(ns);
+            }
+            return cleaned;
+        }
+
+        if (cleaned.isEmpty()) {
+            return List.of(props.defaultNamespace());
+        }
         // "*" = 跨全部知识库：在这里展开成真实的库名列表。
-        // 下游的 Qdrant payload 过滤和 MySQL IN 都要具体名字，
-        // 统一在入口收口，免得两条检索链路各写一遍"全库"分支。
         if (cleaned.contains("*")) {
             List<String> all = repo.listNamespaces().stream()
                     .map(KnowledgeRepository.NamespaceStat::namespace)

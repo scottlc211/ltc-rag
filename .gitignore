@@ -18,3 +18,7 @@ __pycache__/
 *.pyc
 .venv/
 
+# 前端 React 工程依赖（构建产物已直接输出至 src/main/resources/static/）
+web/node_modules/
+web/dist/
+

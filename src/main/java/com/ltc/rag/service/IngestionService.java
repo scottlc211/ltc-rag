@@ -460,7 +460,23 @@ public class IngestionService {
     }
 
     public List<DocumentView> list(String namespace, int limit) {
-        return repo.listDocs(normalizeNamespace(namespace), Math.max(1, Math.min(limit, 500)));
+        return list(namespace, limit, 0);
+    }
+
+    public List<DocumentView> list(String namespace, int limit, int offset) {
+        int safeLimit = Math.max(1, Math.min(limit, 500));
+        int safeOffset = Math.max(0, offset);
+        com.ltc.rag.auth.AuthContext.Caller caller = com.ltc.rag.auth.AuthContext.caller();
+        if (caller != null && caller.isNamespaceRestricted()) {
+            if (namespace == null || namespace.isBlank() || "*".equals(namespace.strip())) {
+                return repo.listDocsInNamespaces(caller.allowedNamespaces(), safeLimit, safeOffset);
+            }
+            String ns = namespace.strip().toLowerCase(Locale.ROOT);
+            caller.assertCanAccessNamespace(ns);
+            return repo.listDocs(ns, safeLimit, safeOffset);
+        }
+        String target = (namespace == null || namespace.isBlank()) ? "*" : namespace.strip().toLowerCase(Locale.ROOT);
+        return repo.listDocs(target, safeLimit, safeOffset);
     }
 
     private void recordJob(IngestJobView job) {

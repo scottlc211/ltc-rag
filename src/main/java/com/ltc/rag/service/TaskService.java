@@ -61,18 +61,29 @@ public class TaskService {
         String taskId = randomHex(16);
         String callbackSecret = callbackUrl == null ? null : randomHex(24);
 
+        AuthContext.Caller caller = AuthContext.caller();
+        List<String> effectiveNamespaces = request.namespaces() == null ? List.of() : request.namespaces();
+        if (caller != null && caller.isNamespaceRestricted()) {
+            if (effectiveNamespaces.isEmpty()) {
+                effectiveNamespaces = caller.allowedNamespaces();
+            } else {
+                for (String ns : effectiveNamespaces) {
+                    caller.assertCanAccessNamespace(ns);
+                }
+            }
+        }
+
         String options;
         try {
             options = objectMapper.writeValueAsString(Map.of(
-                    "namespaces", request.namespaces() == null ? List.of() : request.namespaces(),
+                    "namespaces", effectiveNamespaces,
                     "metadata", request.metadata() == null ? Map.of() : request.metadata()));
         } catch (Exception e) {
             throw ApiException.badRequest("BAD_OPTIONS", "options 序列化失败");
         }
 
-        Long apiKeyId = AuthContext.caller() == null ? null : AuthContext.caller().keyId();
-        String namespace = request.namespaces() == null || request.namespaces().isEmpty()
-                ? null : request.namespaces().get(0);
+        Long apiKeyId = caller == null ? null : caller.keyId();
+        String namespace = effectiveNamespaces.isEmpty() ? null : effectiveNamespaces.get(0);
 
         repository.insert(taskId, apiKeyId, namespace, request.question().strip(), options,
                 callbackUrl, callbackSecret);
